@@ -547,4 +547,24 @@ describe "Ubuntu 22.04 OS image", os_image: true do
       HERE
     end
   end
+
+  describe "bosh rust toolchain" do
+    describe file("/var/vcap/bosh/bin/cargo") do
+      it { should be_linked_to "/var/vcap/bosh/cargo/bin/cargo" }
+      it { should be_executable }
+    end
+
+    describe file("/var/vcap/bosh/bin/rustc") do
+      it { should be_linked_to "/var/vcap/bosh/cargo/bin/rustc" }
+      it { should be_executable }
+    end
+
+    describe file("/var/vcap/bosh/cargo") do
+      it { should be_directory }
+    end
+
+    describe file("/var/vcap/bosh/rustup") do
+      it { should be_directory }
+    end
+  end
 end
