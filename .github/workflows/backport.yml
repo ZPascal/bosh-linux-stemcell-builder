@@ -85,8 +85,8 @@ jobs:
           conflict=false
           for sha in "${commits[@]}"; do
             if ! git cherry-pick "$sha"; then
-              git add -A
-              git cherry-pick --continue --no-edit
+              git cherry-pick --abort
+              git commit --allow-empty -m "[conflict] could not cherry-pick $sha from #$PR_NUMBER — resolve manually"
               conflict=true
             fi
           done
