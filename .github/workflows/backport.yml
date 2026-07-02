@@ -20,12 +20,13 @@ jobs:
         env:
           LABELS: ${{ toJson(github.event.pull_request.labels.*.name) }}
         run: |
-          targets=$(echo "$LABELS" | jq -c '[.[] | select(startswith("backport/")) | ltrimstr("backport/")]')
+          targets='[]'
+          targets=$(echo "$LABELS" | jq -c '[.[] | select(startswith("backport/")) | ltrimstr("backport/")]' || echo '[]')
           echo "targets=$targets" >> "$GITHUB_OUTPUT"
 
   backport:
     needs: build-matrix
-    if: needs.build-matrix.outputs.targets != '[]'
+    if: needs.build-matrix.outputs.targets != '' && needs.build-matrix.outputs.targets != '[]'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -67,14 +68,25 @@ jobs:
           git fetch origin "$TARGET"
           git checkout -b "$BRANCH" "origin/$TARGET"
 
-          # Collect all commits in the PR (base..merge_commit)
-          mapfile -t commits < <(git log --reverse --pretty=format:'%H' "$BASE_SHA..$MERGE_SHA")
+          # Detect squash vs merge commit by parent count
+          parent_count=$(git log --pretty=format:'%P' -n 1 "$MERGE_SHA" | wc -w | tr -d ' ')
+
+          if [ "$parent_count" -gt 1 ]; then
+            mapfile -t commits < <(git log --reverse --pretty=format:'%H' "$BASE_SHA..$MERGE_SHA")
+          else
+            commits=("$MERGE_SHA")
+          fi
+
+          if [ "${#commits[@]}" -eq 0 ]; then
+            echo "No commits to cherry-pick for PR #$PR_NUMBER onto $TARGET — skipping."
+            exit 0
+          fi
 
           conflict=false
           for sha in "${commits[@]}"; do
             if ! git cherry-pick "$sha"; then
               git add -A
-              git commit --no-edit -m "[conflict] cherry-pick $sha from #$PR_NUMBER"
+              git cherry-pick --continue --no-edit
               conflict=true
             fi
           done
@@ -92,13 +104,17 @@ jobs:
           TARGET:    ${{ matrix.target }}
           BRANCH:    ${{ steps.check.outputs.branch }}
         run: |
+          body_file=$(mktemp)
+          printf 'Automated backport of #%s to `%s`.\n\nOriginal PR: %s\n' \
+            "$PR_NUMBER" "$TARGET" "$PR_URL" > "$body_file"
+
           gh pr create \
             --title "[Backport $TARGET] $PR_TITLE" \
-            --body "Automated backport of #$PR_NUMBER to \`$TARGET\`.
-
-          Original PR: $PR_URL" \
+            --body-file "$body_file" \
             --base "$TARGET" \
             --head "$BRANCH"
+
+          rm -f "$body_file"
 
       - name: Open backport PR (conflict — draft)
         if: steps.check.outputs.exists == 'false' && steps.cherrypick.outputs.conflict == 'true'
@@ -110,17 +126,18 @@ jobs:
           TARGET:    ${{ matrix.target }}
           BRANCH:    ${{ steps.check.outputs.branch }}
         run: |
+          body_file=$(mktemp)
+          printf 'Automated backport of #%s to `%s`.\n\nOriginal PR: %s\n\n> [!WARNING]\n> **This backport has conflicts.** Check out the branch `%s`, resolve the conflict markers, and mark this PR as ready for review.\n' \
+            "$PR_NUMBER" "$TARGET" "$PR_URL" "$BRANCH" > "$body_file"
+
           gh pr create \
             --title "[Backport $TARGET] $PR_TITLE" \
-            --body "Automated backport of #$PR_NUMBER to \`$TARGET\`.
-
-          Original PR: $PR_URL
-
-          > [!WARNING]
-          > **This backport has conflicts.** Check out the branch \`$BRANCH\`, resolve the conflict markers, and mark this PR as ready for review." \
+            --body-file "$body_file" \
             --base "$TARGET" \
             --head "$BRANCH" \
             --draft
+
+          rm -f "$body_file"
 
       - name: Skip (branch already exists)
         if: steps.check.outputs.exists == 'true'
