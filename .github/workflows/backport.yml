@@ -1,0 +1,128 @@
+name: Backport
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  build-matrix:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    outputs:
+      targets: ${{ steps.labels.outputs.targets }}
+    steps:
+      - id: labels
+        name: Extract backport targets from labels
+        env:
+          LABELS: ${{ toJson(github.event.pull_request.labels.*.name) }}
+        run: |
+          targets=$(echo "$LABELS" | jq -c '[.[] | select(startswith("backport/")) | ltrimstr("backport/")]')
+          echo "targets=$targets" >> "$GITHUB_OUTPUT"
+
+  backport:
+    needs: build-matrix
+    if: needs.build-matrix.outputs.targets != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJson(needs.build-matrix.outputs.targets) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git identity
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Check if backport branch already exists
+        id: check
+        run: |
+          branch="backport/${{ github.event.pull_request.number }}-to-${{ matrix.target }}"
+          if git ls-remote --exit-code origin "refs/heads/$branch" > /dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+
+      - name: Cherry-pick onto target branch
+        if: steps.check.outputs.exists == 'false'
+        id: cherrypick
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE:  ${{ github.event.pull_request.title }}
+          TARGET:    ${{ matrix.target }}
+          BRANCH:    ${{ steps.check.outputs.branch }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          BASE_SHA:  ${{ github.event.pull_request.base.sha }}
+        run: |
+          git fetch origin "$TARGET"
+          git checkout -b "$BRANCH" "origin/$TARGET"
+
+          # Collect all commits in the PR (base..merge_commit)
+          mapfile -t commits < <(git log --reverse --pretty=format:'%H' "$BASE_SHA..$MERGE_SHA")
+
+          conflict=false
+          for sha in "${commits[@]}"; do
+            if ! git cherry-pick "$sha"; then
+              git add -A
+              git commit --no-edit -m "[conflict] cherry-pick $sha from #$PR_NUMBER"
+              conflict=true
+            fi
+          done
+
+          git push origin "$BRANCH"
+          echo "conflict=$conflict" >> "$GITHUB_OUTPUT"
+
+      - name: Open backport PR (clean)
+        if: steps.check.outputs.exists == 'false' && steps.cherrypick.outputs.conflict == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE:  ${{ github.event.pull_request.title }}
+          PR_URL:    ${{ github.event.pull_request.html_url }}
+          TARGET:    ${{ matrix.target }}
+          BRANCH:    ${{ steps.check.outputs.branch }}
+        run: |
+          gh pr create \
+            --title "[Backport $TARGET] $PR_TITLE" \
+            --body "Automated backport of #$PR_NUMBER to \`$TARGET\`.
+
+          Original PR: $PR_URL" \
+            --base "$TARGET" \
+            --head "$BRANCH"
+
+      - name: Open backport PR (conflict — draft)
+        if: steps.check.outputs.exists == 'false' && steps.cherrypick.outputs.conflict == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE:  ${{ github.event.pull_request.title }}
+          PR_URL:    ${{ github.event.pull_request.html_url }}
+          TARGET:    ${{ matrix.target }}
+          BRANCH:    ${{ steps.check.outputs.branch }}
+        run: |
+          gh pr create \
+            --title "[Backport $TARGET] $PR_TITLE" \
+            --body "Automated backport of #$PR_NUMBER to \`$TARGET\`.
+
+          Original PR: $PR_URL
+
+          > [!WARNING]
+          > **This backport has conflicts.** Check out the branch \`$BRANCH\`, resolve the conflict markers, and mark this PR as ready for review." \
+            --base "$TARGET" \
+            --head "$BRANCH" \
+            --draft
+
+      - name: Skip (branch already exists)
+        if: steps.check.outputs.exists == 'true'
+        run: |
+          echo "Backport branch ${{ steps.check.outputs.branch }} already exists — skipping."
