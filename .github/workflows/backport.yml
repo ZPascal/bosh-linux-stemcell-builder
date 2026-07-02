@@ -83,16 +83,19 @@ jobs:
           fi
 
           conflict=false
+          failed_sha=""
           for sha in "${commits[@]}"; do
             if ! git cherry-pick "$sha"; then
               git cherry-pick --abort
-              git commit --allow-empty -m "[conflict] could not cherry-pick $sha from #$PR_NUMBER — resolve manually"
               conflict=true
+              failed_sha="$sha"
+              break
             fi
           done
 
           git push origin "$BRANCH"
           echo "conflict=$conflict" >> "$GITHUB_OUTPUT"
+          echo "failed_sha=$failed_sha" >> "$GITHUB_OUTPUT"
 
       - name: Open backport PR (clean)
         if: steps.check.outputs.exists == 'false' && steps.cherrypick.outputs.conflict == 'false'
@@ -125,10 +128,11 @@ jobs:
           PR_URL:    ${{ github.event.pull_request.html_url }}
           TARGET:    ${{ matrix.target }}
           BRANCH:    ${{ steps.check.outputs.branch }}
+          FAILED_SHA: ${{ steps.cherrypick.outputs.failed_sha }}
         run: |
           body_file=$(mktemp)
-          printf 'Automated backport of #%s to `%s`.\n\nOriginal PR: %s\n\n> [!WARNING]\n> **This backport has conflicts.** Check out the branch `%s`, resolve the conflict markers, and mark this PR as ready for review.\n' \
-            "$PR_NUMBER" "$TARGET" "$PR_URL" "$BRANCH" > "$body_file"
+          printf 'Automated backport of #%s to `%s`.\n\nOriginal PR: %s\n\n> [!WARNING]\n> **This backport has conflicts.** The cherry-pick of commit `%s` could not be applied cleanly.\n> Check out the branch `%s`, resolve the conflicts, and mark this PR as ready for review.\n' \
+            "$PR_NUMBER" "$TARGET" "$PR_URL" "$FAILED_SHA" "$BRANCH" > "$body_file"
 
           gh pr create \
             --title "[Backport $TARGET] $PR_TITLE" \
