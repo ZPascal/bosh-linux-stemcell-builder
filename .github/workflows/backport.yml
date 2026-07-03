@@ -89,6 +89,8 @@ jobs:
               git cherry-pick --abort
               conflict=true
               failed_sha="$sha"
+              # Add a placeholder commit so the branch has content for the draft PR
+              git commit --allow-empty -m "backport: conflict on $sha — resolve manually"
               break
             fi
           done
