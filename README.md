@@ -388,3 +388,5 @@ When switching from the old pipeline to the new one, don't forget to:
 * update the tasks YAML to point to tasks in the `os-images` directory
 * rename this directory from `new`
 
+
+# Full backport test Fri Jul  3 09:42:43 CEST 2026
